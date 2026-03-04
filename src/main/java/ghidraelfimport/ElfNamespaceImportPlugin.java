@@ -54,7 +54,7 @@ import java.io.File;
 //@formatter:off
 @PluginInfo(
 	status = PluginStatus.STABLE,
-	packageName = "ELF Namespace Import",
+	packageName = "ELF_File_Adder",
 	category = PluginCategoryNames.IMPORT_EXPORT,
 	shortDescription = "Merge ELF file into the current program with namespace support",
 	description = "Merges an ELF binary into the currently open program (Add To Program " +

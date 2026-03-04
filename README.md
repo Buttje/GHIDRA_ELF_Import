@@ -26,7 +26,7 @@ This prevents symbol-name clashes when two related binaries share common symbol 
 
 | Requirement | Version |
 |---|---|
-| Ghidra | 12.0.3 or later |
+| Ghidra | 12.0 or later |
 | JDK | 21 (as required by Ghidra 12.x) |
 | Gradle | 8.5+ (or use the Gradle wrapper) |
 
@@ -35,7 +35,7 @@ This prevents symbol-name clashes when two related binaries share common symbol 
 ## Building the Extension
 
 1. **Install Ghidra** from the [Ghidra releases page](https://github.com/NationalSecurityAgency/ghidra/releases)
-   and note its installation directory (e.g. `/opt/ghidra_12.0.3`).
+   and note its installation directory (e.g. `/opt/ghidra_12.0.4`).
 
 2. **Clone this repository**:
    ```bash
@@ -45,17 +45,17 @@ This prevents symbol-name clashes when two related binaries share common symbol 
 
 3. **Build** by pointing Gradle at your Ghidra installation:
    ```bash
-   export GHIDRA_INSTALL_DIR=/opt/ghidra_12.0.3   # adjust to your installation path
+   export GHIDRA_INSTALL_DIR=/opt/ghidra_12.0.4   # adjust to your installation path
    gradle
    ```
    or inline:
    ```bash
-   gradle -PGHIDRA_INSTALL_DIR=/opt/ghidra_12.0.3
+   gradle -PGHIDRA_INSTALL_DIR=/opt/ghidra_12.0.4
    ```
 
 4. The built extension ZIP file is placed in the `dist/` directory:
    ```
-   dist/ghidra_12.0.3_PUBLIC_<date>_ELF_Namespace_Import.zip
+   dist/ghidra_12.0.4_PUBLIC_<date>_ELF_File_Adder.zip
    ```
 
 ---
