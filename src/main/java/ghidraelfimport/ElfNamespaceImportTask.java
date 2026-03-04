@@ -16,14 +16,19 @@
 package ghidraelfimport;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.*;
 
-import ghidra.app.util.importer.AutoImporter;
+import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
+import ghidra.app.util.Option;
+import ghidra.app.util.bin.ByteProvider;
+import ghidra.app.util.bin.RandomAccessByteProvider;
 import ghidra.app.util.importer.MessageLog;
-import ghidra.app.util.opinion.LoadResults;
-import ghidra.framework.model.DomainFolder;
-import ghidra.framework.model.Project;
+import ghidra.app.util.opinion.ElfLoader;
+import ghidra.app.util.opinion.LoadSpec;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.*;
 import ghidra.util.Msg;
 import ghidra.util.exception.*;
@@ -31,44 +36,60 @@ import ghidra.util.task.Task;
 import ghidra.util.task.TaskMonitor;
 
 /**
- * Background task that performs the three-phase ELF-with-namespace import:
+ * Background task that merges an ELF binary into the already-open program ("Add To Program"
+ * semantics).  The memory segments and symbols from the ELF file become part of the existing
+ * program's memory map rather than creating a separate program.
  *
  * <ol>
  *   <li><b>Namespace existing symbols</b> – creates the user-supplied namespace in the currently
- *       open program and moves all global symbols into it.</li>
- *   <li><b>Import the ELF</b> – uses Ghidra's automatic loader to import the ELF file into the
- *       current project folder and save it.</li>
- *   <li><b>Namespace imported symbols</b> – creates the user-supplied namespace in the newly
- *       imported program and moves all global symbols into it.</li>
+ *       open program and moves all current global symbols into it.</li>
+ *   <li><b>Load ELF into existing program</b> – uses Ghidra's {@link ElfLoader} to add the ELF
+ *       file's memory segments and symbols directly into the open program.  Overlays are used
+ *       automatically when address ranges conflict.</li>
+ *   <li><b>Rename new memory blocks</b> – every memory block that was added by the ELF load is
+ *       renamed to {@code <newNamespace>:<originalName>} so segments from both binaries are
+ *       clearly distinguished.  The block comment is set to {@value #ELF_MERGER_COMMENT}.</li>
+ *   <li><b>Namespace imported symbols</b> – all global symbols that are still in the global
+ *       namespace after step 1 (i.e., those that came from the ELF) are moved into the
+ *       new-binary namespace.</li>
+ *   <li><b>Re-run analysis</b> (optional) – if the user requested it, the auto-analysis
+ *       manager re-analyzes the full program.</li>
  * </ol>
  */
 public class ElfNamespaceImportTask extends Task {
 
-	private static final String TASK_NAME = "Import ELF with Namespace";
+	private static final String TASK_NAME = "Merge ELF into Program";
+
+	/** Comment placed on every memory block that is added from the ELF merge. */
+	static final String ELF_MERGER_COMMENT = "Loaded by elf-merger";
 
 	private final PluginTool tool;
 	private final Program existingProgram;
 	private final File elfFile;
 	private final String existingNamespace;
 	private final String newNamespace;
+	private final boolean reRunAnalysis;
 
 	/**
 	 * Constructs the task.
 	 *
-	 * @param tool              The plugin tool (used to retrieve the active {@link Project}).
+	 * @param tool              The plugin tool (used for analysis manager look-up).
 	 * @param existingProgram   The program currently open in the CodeBrowser.
-	 * @param elfFile           The ELF binary to import.
-	 * @param existingNamespace Namespace name for all global symbols in {@code existingProgram}.
-	 * @param newNamespace      Namespace name for all global symbols in the imported program.
+	 * @param elfFile           The ELF binary to merge in.
+	 * @param existingNamespace Namespace name for all current global symbols in
+	 *                          {@code existingProgram}.
+	 * @param newNamespace      Namespace name for all symbols loaded from the ELF.
+	 * @param reRunAnalysis     If {@code true}, re-run auto-analysis after the merge.
 	 */
 	public ElfNamespaceImportTask(PluginTool tool, Program existingProgram, File elfFile,
-			String existingNamespace, String newNamespace) {
+			String existingNamespace, String newNamespace, boolean reRunAnalysis) {
 		super(TASK_NAME, true, false, true);
 		this.tool = tool;
 		this.existingProgram = existingProgram;
 		this.elfFile = elfFile;
 		this.existingNamespace = existingNamespace;
 		this.newNamespace = newNamespace;
+		this.reRunAnalysis = reRunAnalysis;
 	}
 
 	// -------------------------------------------------------------------------
@@ -81,32 +102,157 @@ public class ElfNamespaceImportTask extends Task {
 		// Phase 1 – namespace existing symbols
 		monitor.setMessage("Applying namespace '" + existingNamespace + "' to existing symbols…");
 		applyNamespaceToProgram(existingProgram, existingNamespace, monitor);
-
 		monitor.checkCancelled();
 
-		// Phase 2 – import the ELF file
-		monitor.setMessage("Importing ELF file: " + elfFile.getName() + "…");
-		Program importedProgram = importElf(monitor);
-		if (importedProgram == null) {
-			// importElf() already reported the error
+		// Snapshot of block names before the ELF load so we can identify new blocks afterward
+		Set<String> existingBlockNames = getMemoryBlockNames(existingProgram);
+
+		// Phase 2 – load ELF content INTO the existing program
+		monitor.setMessage("Loading ELF into program: " + elfFile.getName() + "…");
+		if (!loadElfIntoExistingProgram(monitor)) {
+			// loadElfIntoExistingProgram() already reported the error
 			return;
 		}
+		monitor.checkCancelled();
 
-		try {
-			monitor.checkCancelled();
+		// Phase 3 – rename new memory blocks with namespace prefix
+		monitor.setMessage("Renaming new memory segments with namespace prefix…");
+		renameNewMemoryBlocks(existingBlockNames, monitor);
+		monitor.checkCancelled();
 
-			// Phase 3 – namespace imported symbols
-			monitor.setMessage("Applying namespace '" + newNamespace + "' to imported symbols…");
-			applyNamespaceToProgram(importedProgram, newNamespace, monitor);
+		// Phase 4 – namespace imported symbols (those still in global namespace after Phase 1)
+		monitor.setMessage("Applying namespace '" + newNamespace + "' to imported symbols…");
+		applyNamespaceToProgram(existingProgram, newNamespace, monitor);
+		monitor.checkCancelled();
 
-		}
-		finally {
-			importedProgram.release(this);
+		// Phase 5 – optionally re-run analysis
+		if (reRunAnalysis) {
+			monitor.setMessage("Re-running analysis…");
+			runAnalysis(monitor);
 		}
 	}
 
 	// -------------------------------------------------------------------------
-	// Phase 1 / 3 helper – apply namespace to a program's global symbols
+	// Phase 2 – load ELF into existing program
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Uses {@link ElfLoader} to load the ELF file's segments and symbols directly into
+	 * {@link #existingProgram}.  Overlays are used automatically for conflicting address ranges.
+	 *
+	 * @return {@code true} on success, {@code false} if an error was reported.
+	 */
+	private boolean loadElfIntoExistingProgram(TaskMonitor monitor) throws CancelledException {
+		MessageLog log = new MessageLog();
+
+		try (ByteProvider provider = new RandomAccessByteProvider(elfFile)) {
+			ElfLoader elfLoader = new ElfLoader();
+			Collection<LoadSpec> specs = elfLoader.findSupportedLoadSpecs(provider);
+
+			if (specs.isEmpty()) {
+				Msg.showError(this, null, TASK_NAME,
+					"No ELF load specifications found for: " + elfFile.getName() +
+						"\nThe file may not be a valid ELF binary.");
+				return false;
+			}
+
+			LoadSpec loadSpec = specs.iterator().next();
+			List<Option> options =
+				elfLoader.getDefaultOptions(provider, loadSpec, existingProgram, true);
+
+			int tx = existingProgram.startTransaction("Merge ELF: " + elfFile.getName());
+			boolean success = false;
+			try {
+				elfLoader.loadInto(provider, loadSpec, options, log, existingProgram, monitor);
+				success = true;
+			}
+			finally {
+				existingProgram.endTransaction(tx, success);
+			}
+
+			if (log.hasMessages()) {
+				Msg.info(this, TASK_NAME + " – ELF load log:\n" + log);
+			}
+			return true;
+		}
+		catch (CancelledException ce) {
+			throw ce;
+		}
+		catch (IOException e) {
+			Msg.showError(this, null, TASK_NAME,
+				"Could not read ELF file:\n" + elfFile.getAbsolutePath() + "\n\n" +
+					e.getMessage(),
+				e);
+			return false;
+		}
+		catch (Exception e) {
+			Msg.showError(this, null, TASK_NAME,
+				"Error loading ELF into program:\n" + elfFile.getAbsolutePath() + "\n\n" +
+					e.getMessage(),
+				e);
+			return false;
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Phase 3 – rename new memory blocks
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Returns the set of memory block names currently present in {@code program}.
+	 */
+	private static Set<String> getMemoryBlockNames(Program program) {
+		Set<String> names = new HashSet<>();
+		for (MemoryBlock block : program.getMemory().getBlocks()) {
+			names.add(block.getName());
+		}
+		return names;
+	}
+
+	/**
+	 * Renames every memory block that was added after the snapshot in {@code preExistingNames} to
+	 * {@code <newNamespace>:<originalName>} and sets the block comment to
+	 * {@value #ELF_MERGER_COMMENT}.
+	 */
+	private void renameNewMemoryBlocks(Set<String> preExistingNames, TaskMonitor monitor)
+			throws CancelledException {
+
+		List<MemoryBlock> newBlocks = new ArrayList<>();
+		for (MemoryBlock block : existingProgram.getMemory().getBlocks()) {
+			if (!preExistingNames.contains(block.getName())) {
+				newBlocks.add(block);
+			}
+		}
+
+		if (newBlocks.isEmpty()) {
+			return;
+		}
+
+		int tx = existingProgram.startTransaction("Rename ELF memory blocks");
+		boolean success = false;
+		try {
+			for (MemoryBlock block : newBlocks) {
+				monitor.checkCancelled();
+				String newName = newNamespace + ":" + block.getName();
+				try {
+					block.setName(newName);
+					block.setComment(ELF_MERGER_COMMENT);
+				}
+				catch (Exception e) {
+					Msg.warn(this,
+						"Could not rename memory block '" + block.getName() + "': " +
+							e.getMessage());
+				}
+			}
+			success = true;
+		}
+		finally {
+			existingProgram.endTransaction(tx, success);
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Phase 1 / 4 helper – apply namespace to a program's global symbols
 	// -------------------------------------------------------------------------
 
 	/**
@@ -135,42 +281,17 @@ public class ElfNamespaceImportTask extends Task {
 	}
 
 	// -------------------------------------------------------------------------
-	// Phase 2 helper – import the ELF file
+	// Phase 5 – re-run analysis
 	// -------------------------------------------------------------------------
 
 	/**
-	 * Imports the ELF file using Ghidra's automatic loader.  The imported program is saved to the
-	 * root folder of the current project and returned with {@code this} task registered as a
-	 * consumer.  The caller is responsible for calling {@code program.release(this)} when done.
-	 *
-	 * @return The imported {@link Program}, or {@code null} on failure.
+	 * Schedules a full re-analysis of {@link #existingProgram} via Ghidra's
+	 * {@link AutoAnalysisManager}.
 	 */
-	private Program importElf(TaskMonitor monitor) {
-		Project project = tool.getProject();
-		DomainFolder rootFolder = project.getProjectData().getRootFolder();
-		MessageLog log = new MessageLog();
-
-		// Use a dedicated short-lived consumer for the LoadResults object itself.
-		// 'this' task is registered separately via getPrimaryDomainObject(this) so that the
-		// returned Program stays open after the LoadResults is closed.
-		Object importConsumer = new Object();
-
-		try (LoadResults<Program> results = AutoImporter.importByUsingBestGuess(elfFile, project,
-			rootFolder.getPathname(), importConsumer, log, monitor)) {
-
-			// Save all loaded programs to the project
-			results.save(monitor);
-
-			// Register 'this' task as a consumer; caller must call program.release(this).
-			return results.getPrimaryDomainObject(this);
-		}
-		catch (Exception e) {
-			Msg.showError(this, null, TASK_NAME,
-				"Error importing ELF file:\n" + elfFile.getAbsolutePath() + "\n\n" +
-					e.getMessage() + "\n\nLog:\n" + log.toString(),
-				e);
-			return null;
-		}
+	private void runAnalysis(TaskMonitor monitor) {
+		AutoAnalysisManager manager = AutoAnalysisManager.getAnalysisManager(existingProgram);
+		manager.reAnalyzeAll(null);
+		manager.startAnalysis(monitor);
 	}
 
 	// -------------------------------------------------------------------------

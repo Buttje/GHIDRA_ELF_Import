@@ -1,14 +1,21 @@
 "# GHIDRA ELF Namespace Import Extension
 
-A Ghidra extension that adds an **"Import ELF with Namespace"** action to the CodeBrowser
-*File* menu.  When triggered, the extension:
+A Ghidra extension that adds a **"Merge ELF into Program"** action to the CodeBrowser
+*File* menu.  When triggered, the extension merges the chosen ELF binary **directly into the
+currently open program** (identical to Ghidra's built-in *Add To Program* semantics) rather than
+creating a separate program.  The new file's memory segments and symbols become part of the
+existing memory map.
 
-1. Asks the user for an ELF file to import, a namespace name for the symbols of the
-   already-open binary, and a namespace name for the symbols of the new binary.
-2. Moves all global symbols in the currently open program into the specified *existing-binary*
+The full operation:
+
+1. Moves all global symbols in the currently open program into the specified *existing-binary*
    namespace.
-3. Imports the selected ELF binary into the current Ghidra project using the standard ELF loader.
-4. Moves all global symbols of the imported program into the specified *new-binary* namespace.
+2. Loads the selected ELF binary's segments and symbols into the same program using Ghidra's
+   `ElfLoader`.  Overlays are created automatically for any conflicting address ranges.
+3. Renames every newly added memory block to `<newNamespace>:<originalName>` (e.g.
+   `mylib:.text`) and marks it with the comment *Loaded by elf-merger*.
+4. Moves all symbols that arrived from the ELF into the specified *new-binary* namespace.
+5. (Optionally) Re-runs Ghidra's auto-analysis on the merged program.
 
 This prevents symbol-name clashes when two related binaries share common symbol names
 (e.g. `main`, `init`).
@@ -67,12 +74,13 @@ This prevents symbol-name clashes when two related binaries share common symbol 
 ## Using the Extension
 
 1. Open a binary in the **CodeBrowser**.
-2. Go to **File → Import ELF with Namespace…**
+2. Go to **File → Merge ELF into Program…**
 3. In the dialog:
-   - Click **Browse…** to select the ELF file you want to import.
+   - Click **Browse…** to select the ELF file you want to merge in.
    - Set the **Existing Binary Namespace** (default: current program name without extension).
    - Set the **New Binary Namespace** (default: selected file name without `.elf`).
-4. Click **OK**.  The import runs as a background task.
+   - Optionally check **Re-run analysis after merge** to trigger auto-analysis when done.
+4. Click **OK**.  The merge runs as a background task.
 
 ---
 
