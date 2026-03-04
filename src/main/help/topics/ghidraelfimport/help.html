@@ -1,0 +1,62 @@
+<html>
+<head>
+  <title>Import ELF with Namespace</title>
+</head>
+<body>
+<h1>Import ELF with Namespace</h1>
+
+<p>
+  <b>Location:</b> CodeBrowser → File → Import ELF with Namespace&hellip;
+</p>
+
+<h2>Overview</h2>
+<p>
+  This action imports an ELF binary into the current Ghidra project while assigning all symbols to
+  user-defined namespaces.  Using separate namespaces for the existing binary and the newly imported
+  binary prevents symbol-name clashes when both share common names (e.g. <code>main</code>,
+  <code>init</code>).
+</p>
+
+<h2>Usage</h2>
+<ol>
+  <li>Open a program in the CodeBrowser.</li>
+  <li>Select <b>File → Import ELF with Namespace&hellip;</b></li>
+  <li>In the dialog that appears:
+    <ul>
+      <li>Click <b>Browse&hellip;</b> to select the <code>.elf</code> file to import.</li>
+      <li>Enter a <b>Existing Binary Namespace</b>.  All global symbols currently in the open
+          program will be moved into this namespace.  The default value is the program name with
+          its file extension removed.</li>
+      <li>Enter a <b>New Binary Namespace</b>.  All global symbols in the imported binary will be
+          placed into this namespace.  The default value is the selected file name with the
+          <code>.elf</code> extension removed.</li>
+    </ul>
+  </li>
+  <li>Click <b>OK</b> to start the import.</li>
+</ol>
+
+<p>
+  The operation runs in the background and reports progress in Ghidra's task dialog.  It can be
+  cancelled at any time.
+</p>
+
+<h2>What Happens</h2>
+<ol>
+  <li>A namespace with the specified <em>existing-binary</em> name is created in the currently open
+      program (if it does not already exist).  Every global symbol in that program is then moved
+      into this namespace.</li>
+  <li>The selected ELF file is imported into the root folder of the current project using Ghidra's
+      standard automatic loader.</li>
+  <li>A namespace with the specified <em>new-binary</em> name is created in the imported program.
+      Every global symbol of the imported program is moved into this namespace.</li>
+</ol>
+
+<h2>Notes</h2>
+<ul>
+  <li>Symbols that cannot be moved (e.g., because a symbol with the same name already exists in
+      the target namespace) are skipped; a warning is written to the Ghidra application log.</li>
+  <li>The two namespace names must be different.</li>
+  <li>The action is only available when a program is open in the CodeBrowser.</li>
+</ul>
+</body>
+</html>
