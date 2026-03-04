@@ -1,0 +1,113 @@
+name: Build & Attach Extension to Release
+
+on:
+  # Build when you push a version tag like v1.2.3
+  push:
+    tags:
+      - "v*"
+  # Also build if you create a GitHub Release from the UI
+  release:
+    types: [created]
+  # Manual trigger (optional)
+  workflow_dispatch:
+    inputs:
+      ghidra_version:
+        description: "Ghidra major.minor to build against (e.g., 11.0)"
+        required: false
+        default: "11.0"
+
+permissions:
+  contents: write
+
+env:
+  # Default Ghidra version (can be overridden via workflow_dispatch input)
+  GHIDRA_VERSION: "11.0"
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set GHIDRA_VERSION (from workflow_dispatch if provided)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ghidra_version != '' }}
+        run: echo "GHIDRA_VERSION=${{ inputs.ghidra_version }}" >> $GITHUB_ENV
+
+      - name: Set up JDK 21 (required by Ghidra 11.x)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Download Ghidra release ZIP matching GHIDRA_VERSION
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Target Ghidra version: ${GHIDRA_VERSION}"
+
+          # Fetch latest Ghidra release metadata (NSA repo) and select the first asset that matches:
+          # ghidra_<major.minor>_PUBLIC_<date>.zip
+          ASSET_URL="$(
+            gh api repos/NationalSecurityAgency/ghidra/releases/latest \
+              --jq ".assets[] | select(.name | test(\"^ghidra_${GHIDRA_VERSION}_PUBLIC_.*\\\\.zip$\")) | .browser_download_url" \
+              | head -n 1
+          )"
+
+          if [ -z "${ASSET_URL}" ]; then
+            echo "ERROR: Could not find a Ghidra ZIP asset for version ${GHIDRA_VERSION} in latest Ghidra release."
+            echo "Tip: Update GHIDRA_VERSION (or run workflow_dispatch with a different ghidra_version)."
+            exit 1
+          fi
+
+          echo "Downloading: ${ASSET_URL}"
+          mkdir -p /tmp/ghidra_dl
+          curl -L "${ASSET_URL}" -o /tmp/ghidra_dl/ghidra.zip
+
+          mkdir -p /tmp/ghidra
+          unzip -q /tmp/ghidra_dl/ghidra.zip -d /tmp/ghidra
+
+          # The extracted directory is typically something like: /tmp/ghidra/ghidra_11.0_PUBLIC
+          GHIDRA_DIR="$(find /tmp/ghidra -maxdepth 1 -type d -name "ghidra_*_PUBLIC*" | head -n 1)"
+          if [ -z "${GHIDRA_DIR}" ]; then
+            echo "ERROR: Could not locate extracted Ghidra directory under /tmp/ghidra"
+            ls -la /tmp/ghidra
+            exit 1
+          fi
+
+          echo "GHIDRA_INSTALL_DIR=${GHIDRA_DIR}" >> $GITHUB_ENV
+          echo "Using GHIDRA_INSTALL_DIR=${GHIDRA_DIR}"
+
+      - name: Build extension (per README: export GHIDRA_INSTALL_DIR; gradle)
+        run: |
+          set -euo pipefail
+
+          echo "GHIDRA_INSTALL_DIR=${GHIDRA_INSTALL_DIR}"
+
+          if [ -x "./gradlew" ]; then
+            ./gradlew -PGHIDRA_INSTALL_DIR="${GHIDRA_INSTALL_DIR}"
+          else
+            gradle -PGHIDRA_INSTALL_DIR="${GHIDRA_INSTALL_DIR}"
+          fi
+
+          echo "Built artifacts:"
+          ls -la dist || true
+
+      - name: Create checksums
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum *.zip > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Upload artifacts to GitHub Release (or Tag Release)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
