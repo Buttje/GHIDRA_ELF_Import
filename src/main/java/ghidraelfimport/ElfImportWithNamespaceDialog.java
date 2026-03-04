@@ -30,11 +30,12 @@ import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
 
 /**
- * Dialog that collects the three parameters required for an ELF-with-namespace import:
+ * Dialog that collects the parameters required for an ELF-merge-into-program operation:
  * <ul>
- *   <li>The ELF file to import.</li>
+ *   <li>The ELF file to merge.</li>
  *   <li>A namespace name for the symbols of the already-open (existing) binary.</li>
- *   <li>A namespace name for the symbols of the binary being imported.</li>
+ *   <li>A namespace name for the symbols of the binary being merged in.</li>
+ *   <li>Whether to re-run Ghidra's auto-analysis after the merge.</li>
  * </ul>
  *
  * <p>Default values for the namespace fields are derived from the respective file names with the
@@ -47,6 +48,7 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 	private JTextField elfFileField;
 	private JTextField existingNsField;
 	private JTextField newNsField;
+	private JCheckBox reRunAnalysisCheckbox;
 
 	private File elfFile;
 	private boolean cancelled = true;
@@ -59,7 +61,7 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 	 *                       default existing-namespace value.
 	 */
 	public ElfImportWithNamespaceDialog(PluginTool tool, Program currentProgram) {
-		super("Import ELF with Namespace", true, true, true, false);
+		super("Merge ELF into Program", true, true, true, false);
 		this.tool = tool;
 
 		addWorkPanel(buildMainPanel(currentProgram));
@@ -104,7 +106,7 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 
 		elfFileField = new JTextField(30);
 		elfFileField.setEditable(false);
-		elfFileField.setToolTipText("Path to the ELF binary to import");
+		elfFileField.setToolTipText("Path to the ELF binary to merge into the current program");
 		fieldConstraints.gridy = row;
 		panel.add(elfFileField, fieldConstraints);
 
@@ -135,6 +137,19 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 			"Namespace to assign to all symbols in the imported binary (default: file name without .elf)");
 		fieldConstraints.gridy = row;
 		panel.add(newNsField, fieldConstraints);
+		row++;
+
+		// --- Re-run analysis row ---
+		GridBagConstraints checkboxConstraints = new GridBagConstraints();
+		checkboxConstraints.anchor = GridBagConstraints.WEST;
+		checkboxConstraints.insets = new Insets(8, 4, 4, 4);
+		checkboxConstraints.gridx = 0;
+		checkboxConstraints.gridwidth = 3;
+		checkboxConstraints.gridy = row;
+		reRunAnalysisCheckbox = new JCheckBox("Re-run analysis after merge");
+		reRunAnalysisCheckbox.setToolTipText(
+			"If checked, Ghidra's auto-analysis will be run on the program after the merge completes");
+		panel.add(reRunAnalysisCheckbox, checkboxConstraints);
 
 		// Wrap in a border panel so the dialog has a decent minimum size
 		JPanel wrapper = new JPanel(new BorderLayout());
@@ -172,7 +187,7 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 		String filePath = elfFileField.getText().trim();
 		if (filePath.isEmpty()) {
 			Msg.showError(this, getComponent(), "Validation Error",
-				"Please select an ELF file to import.");
+				"Please select an ELF file to merge.");
 			return;
 		}
 		File candidate = new File(filePath);
@@ -195,7 +210,7 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 		String newNs = newNsField.getText().trim();
 		if (newNs.isEmpty()) {
 			Msg.showError(this, getComponent(), "Validation Error",
-				"Please enter a namespace name for the imported binary.");
+				"Please enter a namespace name for the merged binary.");
 			return;
 		}
 
@@ -237,6 +252,11 @@ public class ElfImportWithNamespaceDialog extends DialogComponentProvider {
 	/** Returns the namespace name the user entered for the newly imported binary. */
 	public String getNewBinaryNamespace() {
 		return newNsField.getText().trim();
+	}
+
+	/** Returns {@code true} if the user checked "Re-run analysis after merge". */
+	public boolean isReRunAnalysis() {
+		return reRunAnalysisCheckbox.isSelected();
 	}
 
 	// -------------------------------------------------------------------------
