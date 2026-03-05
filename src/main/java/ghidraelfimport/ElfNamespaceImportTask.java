@@ -26,6 +26,7 @@ import ghidra.app.util.bin.RandomAccessByteProvider;
 import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.opinion.ElfLoader;
 import ghidra.app.util.opinion.LoadSpec;
+import ghidra.app.util.opinion.Loader;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.MemoryBlock;
@@ -158,17 +159,12 @@ public class ElfNamespaceImportTask extends Task {
 
 			LoadSpec loadSpec = specs.iterator().next();
 			List<Option> options =
-				elfLoader.getDefaultOptions(provider, loadSpec, existingProgram, true);
+				elfLoader.getDefaultOptions(provider, loadSpec, existingProgram, true, false);
 
-			int tx = existingProgram.startTransaction("Merge ELF: " + elfFile.getName());
-			boolean success = false;
-			try {
-				elfLoader.loadInto(provider, loadSpec, options, log, existingProgram, monitor);
-				success = true;
-			}
-			finally {
-				existingProgram.endTransaction(tx, success);
-			}
+			Loader.ImporterSettings settings = new Loader.ImporterSettings(
+				provider, elfFile.getName(), null, null, false, loadSpec, options, null, log,
+				monitor);
+			elfLoader.loadInto(existingProgram, settings);
 
 			if (log.hasMessages()) {
 				Msg.info(this, TASK_NAME + " – ELF load log:\n" + log);

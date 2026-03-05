@@ -21,7 +21,7 @@ permissions:
 
 env:
   # Default Ghidra version (can be overridden via workflow_dispatch input)
-  GHIDRA_VERSION: "11.0"
+  GHIDRA_VERSION: "12.0"
 
 jobs:
   build-and-upload:
